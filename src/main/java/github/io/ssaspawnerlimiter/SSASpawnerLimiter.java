@@ -143,12 +143,31 @@ public final class SSASpawnerLimiter extends JavaPlugin {
         // Cancel cache cleanup task
         if (cacheCleanupTask != null) {
             cacheCleanupTask.cancel();
+            cacheCleanupTask = null;
+        }
+
+        // Clear caches before closing database
+        if (chunkLimitService != null) {
+            chunkLimitService.cleanupExpiredCache();
+        }
+        if (playerLimitService != null) {
+            playerLimitService.cleanupExpiredCache();
         }
 
         // Close database connection
         if (databaseManager != null) {
             databaseManager.close();
+            databaseManager = null;
         }
+
+        // Clear references for reload safety
+        chunkLimitService = null;
+        playerLimitService = null;
+        commandManager = null;
+        api = null;
+        languageSystem = null;
+        languageManager = null;
+        messageService = null;
 
         getLogger().info("SSA Spawner Limiter has been disabled!");
     }

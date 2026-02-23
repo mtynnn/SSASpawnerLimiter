@@ -9,6 +9,7 @@ import github.nighter.smartspawner.api.events.SpawnerPlayerBreakEvent;
 import github.nighter.smartspawner.api.events.SpawnerPlaceEvent;
 import github.nighter.smartspawner.api.events.SpawnerRemoveEvent;
 import github.nighter.smartspawner.api.events.SpawnerStackEvent;
+import github.nighter.smartspawner.api.data.SpawnerDataDTO;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -17,6 +18,7 @@ import org.bukkit.event.Listener;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -83,25 +85,88 @@ public class SpawnerLimitListener implements Listener {
 
     /**
      * Handle spawner break - decrease count
+     * Bug fix: Decrements the OWNER's count, not the BREAKER's count
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSpawnerBreak(SpawnerPlayerBreakEvent event) {
-        Player player = event.getPlayer();
+        Player breaker = event.getPlayer();
         Location location = event.getLocation();
         int quantity = event.getQuantity();
-        UUID playerUUID = player.getUniqueId();
-
+        
         if (plugin.getConfig().getBoolean("debug", false)) {
             String entityName = event.getEntity() != null ? event.getEntity().getName() : "Unknown";
             plugin.getLogger().info(String.format(
                 "[DEBUG] SpawnerBreakEvent - Player: %s, Entity: %s, Quantity: %d, Chunk: %s",
-                player.getName(), entityName, quantity, new ChunkKey(location)
+                breaker.getName(), entityName, quantity, new ChunkKey(location)
             ));
         }
 
+        // Get the spawner owner UUID from SmartSpawner API
+        UUID ownerUUID = getSpawnerOwnerUUID(location, breaker.getUniqueId());
+
         // Update counts asynchronously in background
         chunkLimitService.removeSpawners(location, quantity);
-        playerLimitService.removeSpawners(playerUUID, quantity);
+        playerLimitService.removeSpawners(ownerUUID, quantity);
+    }
+
+    /**
+     * Get the owner UUID of a spawner at a given location.
+     * Falls back to the provided fallbackUUID if the spawner or owner cannot be found.
+     *
+     * @param location The location of the spawner
+     * @param fallbackUUID The UUID to use if the spawner owner cannot be determined
+     * @return The owner's UUID, or the fallbackUUID if not found
+     */
+    private UUID getSpawnerOwnerUUID(Location location, UUID fallbackUUID) {
+        try {
+            // Get all spawners from SmartSpawner API
+            var allSpawners = plugin.getApi().getAllSpawners();
+            
+            if (allSpawners == null) {
+                return fallbackUUID;
+            }
+
+            // Find the spawner at the given location
+            for (SpawnerDataDTO spawner : allSpawners) {
+                Location spawnerLoc = spawner.getLocation();
+                if (spawnerLoc != null && spawnerLoc.equals(location)) {
+                    // Try to get owner UUID using reflection (for version compatibility)
+                    UUID ownerUUID = getOwnerIdFromSpawner(spawner);
+                    if (ownerUUID != null) {
+                        return ownerUUID;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            plugin.getLogger().warning("Failed to get spawner owner UUID at " + location + ": " + e.getMessage());
+        }
+        return fallbackUUID;
+    }
+
+    /**
+     * Safely get the owner UUID from a SpawnerDataDTO using reflection.
+     * Tries multiple possible method names for version compatibility.
+     *
+     * @param spawner The spawner data object
+     * @return The owner's UUID, or null if not found
+     */
+    private UUID getOwnerIdFromSpawner(SpawnerDataDTO spawner) {
+        // Method names to try, in order of preference
+        String[] methodNames = {"getOwnerId", "getOwner", "getPlacedByUUID", "getCreatorUUID"};
+        
+        for (String methodName : methodNames) {
+            try {
+                var method = spawner.getClass().getMethod(methodName);
+                Object result = method.invoke(spawner);
+                if (result instanceof UUID) {
+                    return (UUID) result;
+                }
+            } catch (NoSuchMethodException | IllegalAccessException | java.lang.reflect.InvocationTargetException e) {
+                // Continue to next method name
+            }
+        }
+        
+        return null;
     }
 
     /**
@@ -172,17 +237,20 @@ public class SpawnerLimitListener implements Listener {
 
     /**
      * Handle spawner removal (from GUI or other means) - decrease count
+     * Bug fix: Decrements the OWNER's count, not the player performing the removal
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onSpawnerRemove(SpawnerRemoveEvent event) {
-        Player player = event.getPlayer();
+        Player remover = event.getPlayer();
         Location location = event.getLocation();
         int changeAmount = event.getChangeAmount();
-        UUID playerUUID = player.getUniqueId();
+
+        // Get the spawner owner UUID from SmartSpawner API
+        UUID ownerUUID = getSpawnerOwnerUUID(location, remover.getUniqueId());
 
         // changeAmount is the difference (can be negative when removing)
         chunkLimitService.removeSpawners(location, Math.abs(changeAmount));
-        playerLimitService.removeSpawners(playerUUID, Math.abs(changeAmount));
+        playerLimitService.removeSpawners(ownerUUID, Math.abs(changeAmount));
     }
 }
 
